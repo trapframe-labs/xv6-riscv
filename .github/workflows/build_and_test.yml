@@ -16,7 +16,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential qemu-system-riscv64
+          sudo apt-get install -y build-essential qemu-system-riscv64 gcc-riscv64-unknown-elf
 
       - name: Build xv6
         run: make
