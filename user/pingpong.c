@@ -17,7 +17,7 @@
 #define ONE_BYTE  1
 #define MSG_PING 'p'
 #define MSG_PONG 'c'
-s
+
 void rearrange_stdio(int main_fd, int pipe_fd) {
   close(main_fd);
   dup(pipe_fd);
