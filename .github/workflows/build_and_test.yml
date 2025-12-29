@@ -27,7 +27,4 @@ jobs:
       - name: Test xv6 in QEMU
         run: |
           set -e
-          timeout 30s make qemu < /dev/null > /dev/null 2>&1 &
-          sleep 10
-          pkill -0 qemu-system || exit 1
-          pkill qemu-system
+          timeout 30s make qemu
