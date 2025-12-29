@@ -1,0 +1,28 @@
+name: Build and Test xv6
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, reopened, synchronize]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential qemu
+
+      - name: Build xv6
+        run: make
+
+      - name: Test xv6 in QEMU
+        run: |
+          set -e
+          timeout 30s make qemu < /dev/null > /dev/null 2>&1 &
+          sleep 10
+          pkill -0 qemu-system || exit 1
+          pkill qemu-system
