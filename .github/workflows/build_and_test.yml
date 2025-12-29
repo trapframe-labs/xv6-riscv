@@ -27,5 +27,5 @@ jobs:
       - name: Test xv6 boot
         run: |
           set -e
-          timeout 30s make qemu | tee qemu.log
+          timeout 15s make qemu | tee qemu.log
           grep -q "init: starting sh" qemu.log
