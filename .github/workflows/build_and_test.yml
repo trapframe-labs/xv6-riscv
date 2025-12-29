@@ -1,0 +1,31 @@
+name: Build and Test xv6
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, reopened, synchronize]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential qemu-system-riscv64 gcc-riscv64-unknown-elf
+
+      - name: Clean build artifacts
+        run: make clean
+
+      - name: Build xv6
+        run: make
+
+      - name: Test xv6 boot
+        run: |
+          set -e
+          timeout 15s make qemu | tee qemu.log
+          grep -q "init: starting sh" qemu.log
