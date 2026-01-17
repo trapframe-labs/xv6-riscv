@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -106,4 +107,37 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void) 
+{
+  int n;
+  argint(0, &n);
+
+  myproc()->trace = n;
+  return 0;
+}
+
+int sysinfo(uint64 addr)
+{
+  struct proc *p = myproc();
+  struct sysinfo sys_info;
+
+  sys_info.freemem = freemem();
+  sys_info.nproc = nproc_active();
+
+  if(copyout(p->pagetable, addr, (char *)&sys_info, sizeof(sys_info)) < 0)
+    return -1;
+
+  return 0;
+}
+
+uint64
+sys_sysinfo(void) 
+{
+  uint64 s;   // user pointer to struct sysinfo
+  argaddr(0, &s);
+
+  return sysinfo(s);
 }

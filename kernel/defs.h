@@ -183,3 +183,12 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+// runtime free memory
+uint64 freemem(void);
+
+// currently available processes which are NOT in UNUSED state
+uint64 nproc_active(void);
+
+// system info
+int sysinfo(uint64 addr);
