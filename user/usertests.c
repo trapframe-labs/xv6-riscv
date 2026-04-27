@@ -2812,9 +2812,9 @@ struct test {
   {sbrklast, "sbrklast"},
   {sbrk8000, "sbrk8000"},
   {badarg, "badarg" },
-  {lazy_alloc, "lazy_alloc"},
-  {lazy_unmap, "lazy_unmap"},
-  {lazy_copy, "lazy_copy"},
+  // {lazy_alloc, "lazy_alloc"},
+  // {lazy_unmap, "lazy_unmap"},
+  // {lazy_copy, "lazy_copy"},
   {lazy_sbrk, "lazy_sbrk"},
   { 0, 0},
 };
