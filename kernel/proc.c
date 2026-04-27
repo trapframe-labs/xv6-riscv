@@ -20,6 +20,9 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+/* dedicated kernel page table for each process*/
+extern pagetable_t kernel_pagetable;
+
 // helps ensure that wakeups of wait()ing
 // parents are not lost. helps obey the
 // memory model when using p->parent.
@@ -56,6 +59,18 @@ procinit(void)
       p->state = UNUSED;
       p->kstack = KSTACK((int) (p - proc));
   }
+}
+
+// Allocate a page for per process's kernel stack.
+// Map it high in memory, followed by an invalid
+// guard page.
+void
+proc_mapstacks_per_process(pagetable_t kpgtbl, struct proc *p) {
+  pte_t *pte = walk(kernel_pagetable, p->kstack, 0);
+  if(pte == 0)
+    panic("proc_mapstacks_per_process");
+  uint64 pa = PTE2PA(*pte);
+  kvmmap(kpgtbl, p->kstack, (uint64)pa, PGSIZE, PTE_R | PTE_W);
 }
 
 // Must be called with interrupts disabled,
@@ -146,6 +161,9 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // dedicated kernel pagetable setup for each process
+  p->kpagetable_per_proc = kvminit_per_process(p);
+
   return p;
 }
 
@@ -169,6 +187,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  if(p->kpagetable_per_proc)
+    freewalk_per_process(p->kpagetable_per_proc);
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -244,7 +264,7 @@ growproc(int n)
     if(sz + n > TRAPFRAME) {
       return -1;
     }
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+    if((sz = uvmalloc(p->pagetable, p->kpagetable_per_proc, sz, sz + n, PTE_W)) == 0) {
       return -1;
     }
   } else if(n < 0){
@@ -269,7 +289,7 @@ kfork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, np->kpagetable_per_proc, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -448,6 +468,10 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        // process dedicated kernel page tables
+        w_satp(MAKE_SATP(p->kpagetable_per_proc));
+        sfence_vma();
+
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -455,6 +479,14 @@ scheduler(void)
         // It should have changed its p->state before coming back.
         c->proc = 0;
         found = 1;
+        // when current process is running
+        w_satp(MAKE_SATP(kernel_pagetable));    // write satp
+        sfence_vma();                           // flush TLB
+      } else {
+        
+        // when no process is runnable
+        w_satp(MAKE_SATP(kernel_pagetable));    // write satp
+        sfence_vma();                           // flush TLB
       }
       release(&p->lock);
     }
@@ -655,7 +687,7 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
 {
   struct proc *p = myproc();
   if(user_src){
-    return copyin(p->pagetable, dst, src, len);
+    return copyin(p->kpagetable_per_proc, dst, src, len);
   } else {
     memmove(dst, (char*)src, len);
     return 0;

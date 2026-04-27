@@ -68,8 +68,14 @@ kexec(char *path, char **argv)
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
     uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
+    
+    if((ph.vaddr + ph.memsz) >= PLIC){
+      printf("sz1 >= PLIC\n");
       goto bad;
+    }
+    if((sz1 = uvmalloc(pagetable, p->kpagetable_per_proc, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
+      goto bad;
+
     sz = sz1;
     if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
       goto bad;
@@ -86,8 +92,14 @@ kexec(char *path, char **argv)
   // Use the rest as the user stack.
   sz = PGROUNDUP(sz);
   uint64 sz1;
-  if((sz1 = uvmalloc(pagetable, sz, sz + (USERSTACK+1)*PGSIZE, PTE_W)) == 0)
+
+  if((sz + 2*PGSIZE) >= PLIC){
+    printf("sz1 >= PLIC\n");
     goto bad;
+  }
+  if((sz1 = uvmalloc(pagetable, p->kpagetable_per_proc, sz, sz + (USERSTACK+1)*PGSIZE, PTE_W)) == 0)
+    goto bad;
+
   sz = sz1;
   uvmclear(pagetable, sz-(USERSTACK+1)*PGSIZE);
   sp = sz;
@@ -134,7 +146,8 @@ kexec(char *path, char **argv)
   p->trapframe->epc = elf.entry;  // initial program counter = ulib.c:start()
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
-
+  if(p->pid==1) 
+    vmprint(p->pagetable);
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:

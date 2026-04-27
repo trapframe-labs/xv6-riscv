@@ -51,6 +51,41 @@ kvmmake(void)
   return kpgtbl;
 }
 
+
+// Make a direct-map page table for the kernel.
+pagetable_t
+kvmmake_per_process(struct proc* p)
+{
+  pagetable_t kpgtbl;
+
+  kpgtbl = (pagetable_t) kalloc();
+  memset(kpgtbl, 0, PGSIZE);
+
+  // uart registers
+  kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // PLIC
+  kvmmap(kpgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  // map kernel stacks
+  proc_mapstacks_per_process(kpgtbl, p);
+  
+  return kpgtbl;
+}
+
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -66,6 +101,14 @@ void
 kvminit(void)
 {
   kernel_pagetable = kvmmake();
+}
+
+// Initialize the one kernel_pagetable
+pagetable_t 
+kvminit_per_process(struct proc* p)
+{
+  pagetable_t kpagetable = kvmmake_per_process(p);
+  return kpagetable;
 }
 
 // Switch the current CPU's h/w page table register to
@@ -214,7 +257,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 // Allocate PTEs and physical memory to grow a process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
+uvmalloc(pagetable_t pagetable, pagetable_t kpagetable_per_proc, uint64 oldsz, uint64 newsz, int xperm)
 {
   char *mem;
   uint64 a;
@@ -235,6 +278,18 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
+    // if already mapped, remove previous mapping before remapping same address
+    pte_t *pte = walk(kpagetable_per_proc, a, 0);
+    if(pte!=0) {
+      if(*pte & PTE_V) {
+        uvmunmap(kpagetable_per_proc, a, 1, 0);
+      }
+    }
+    if(mappages(kpagetable_per_proc, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|xperm) != 0){
+      kfree(mem);
+      uvmdealloc(pagetable, a, oldsz);
+      return 0;
+    }
   }
   return newsz;
 }
@@ -246,12 +301,14 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 uint64
 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
+  struct proc* p = myproc();
   if(newsz >= oldsz)
     return oldsz;
 
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    uvmunmap(p->kpagetable_per_proc, PGROUNDUP(newsz), npages, 0);
   }
 
   return newsz;
@@ -277,6 +334,25 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+// Recursively free page-table pages.
+// All leaf mappings should be ignored.
+void
+freewalk_per_process(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    // leaf mappins are ignored when we don't check permissions
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      freewalk_per_process((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void
@@ -294,7 +370,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+uvmcopy(pagetable_t old, pagetable_t new, pagetable_t kpagetable_per_proc, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
@@ -312,6 +388,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+      kfree(mem);
+      goto err;
+    }
+    // if already mapped, remove previous mapping before remapping same address
+    if(mappages(kpagetable_per_proc, i, PGSIZE, (uint64)mem, (flags & (~PTE_U))) != 0){
       kfree(mem);
       goto err;
     }
@@ -380,24 +461,17 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  struct proc* p = myproc();
+  
+  // cannot copy anything from the kernel
+  if(srcva >= KERNBASE)
+    return -1;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
-        return -1;
-      }
-    }
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
+  char* src = (char*)srcva;
+  for(int i=0; i<len; ++i) {
+    if((uint64)src > (p->sz))
+      return -1;
+    *dst++ = *src++;
   }
   return 0;
 }
@@ -409,40 +483,24 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  struct proc* p = myproc();
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
+  // cannot copy anything from the kernel
+  if(srcva >= KERNBASE)
     return -1;
+  
+  char* s = (char*)srcva;
+  char* d = (char*)dst;
+  
+  for(int i=0; i<max; ++i) {
+    if((uint64)s >= p->sz)
+      return -1;
+    *d = *s;
+    if(*d == '\0')
+      return 0;
+    ++d; ++s;
   }
+  return -1;
 }
 
 // allocate and map user memory if process is referencing a page
@@ -484,3 +542,150 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
+
+/*
+  Quesiton 1: Define a function called vmprint(). It should take a pagetable_t argument, and print
+  that pagetable in the format described below. Insert if(p->pid==1) vmprint(p->pagetable)
+  in exec.c just before the return argc, to print the first process's page table. You
+  receive full credit for this assignment if you pass the pte printout test of make grade.
+
+  page table 0x0000000087f6e000
+  ..0: pte 0x0000000021fda801 pa 0x0000000087f6a000
+  .. ..0: pte 0x0000000021fda401 pa 0x0000000087f69000
+  .. .. ..0: pte 0x0000000021fdac1f pa 0x0000000087f6b000
+  .. .. ..1: pte 0x0000000021fda00f pa 0x0000000087f68000
+  .. .. ..2: pte 0x0000000021fd9c1f pa 0x0000000087f67000
+  ..255: pte 0x0000000021fdb401 pa 0x0000000087f6d000
+  .. ..511: pte 0x0000000021fdb001 pa 0x0000000087f6c000
+  .. .. ..510: pte 0x0000000021fdd807 pa 0x0000000087f76000
+  .. .. ..511: pte 0x0000000020001c0b pa 0x0000000080007000
+
+  The first line displays the argument to vmprint. After that there is a line for each PTE,
+  including PTEs that refer to page-table pages deeper in the tree. Each PTE line is indented
+  by a number of " .." that indicates its depth in the tree. Each PTE line shows the PTE
+  index in its page-table page, the pte bits, and the physical address extracted from the
+  PTE. Don't print PTEs that are not valid. In the above example, the top-level page-table
+  page has mappings for entries 0 and 255. The next level down for entry 0 has only index 0
+  mapped, and the bottom-level for that index 0 has entries 0, 1, and 2 mapped.
+
+  Your code might emit different physical addresses than those shown above.
+  The number of entries and the virtual addresses should be the same.
+
+  Some hints:
+  * You can put vmprint() in kernel/vm.c.
+  * Use the macros at the end of the file kernel/riscv.h.
+  * The function freewalk may be inspirational.
+  * Define the prototype for vmprint in kernel/defs.h so that you can call it from exec.c.
+  * Use %p in your printf calls to print out full 64-bit hex PTEs and addresses as shown in the example.
+
+  Explain the output of vmprint in terms of Fig 3-4 from the text. What does page 0 contain? What is in
+  page 2? When running in user mode, could the process read/write the memory mapped by page 1?
+*/
+
+void vmprint_levels(pagetable_t pagetable, int level, int depth)
+{
+  const int max_ptes = 512;
+  for (int i = 0; i < max_ptes; ++i)
+  {
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V)
+    {
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      for (int i = 0; i < depth; ++i)
+      {
+        printf(".. ");
+      }
+      printf("..%d: pte %p pa %p\n", i, (void*)pte, (void*)child);
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0)
+        vmprint_levels((pagetable_t)child, level - 1, depth + 1);
+    }
+  }
+  return;
+}
+
+void vmprint(pagetable_t pagetable)
+{
+  uint level = 2, depth = 0;
+  printf("page table %p\n", pagetable);
+  vmprint_levels(pagetable, level, depth);
+  printf("\n");
+}
+
+/*
+  q) Explain the output of vmprint in terms of Fig 3-4 from the text.
+  a) It is a multi-level page table structure. Prints out all valid PTEs.
+  It contains all the sections like text, data, stack, guard page, trampoline etc.
+
+  q) What does page 0 contain?
+  a) Considering leaf page 0. It is a page at level 0. It contains the text section
+  of the program as per the textbook.
+
+  q) What is in page 2?
+  a) This most likely contains more program data (BSS / uninitialized data). The ELF
+  header shows that the data segment memsz extends beyond one page, so the next
+  page after page 1 will still belong to the program's data region rather than the heap.
+
+  q) When running in user mode, could the process read/write the memory mapped by page 1?
+  a) Yes, we should be able to read/write to page 1. Page 1 as per the textbook is data section,
+  which is not executable, but should be read/write.
+
+Question 2: A kernel page table per process (hard)
+Xv6 has a single kernel page table that's used whenever it executes in the kernel. The kernel page table is a direct mapping to physical addresses, 
+so that kernel virtual address x maps to physical address x. Xv6 also has a separate page table for each process's user address space, containing only 
+mappings for that process's user memory, starting at virtual address zero. Because the kernel page table doesn't contain these mappings, user addresses 
+are not valid in the kernel. Thus, when the kernel needs to use a user pointer passed in a system call (e.g., the buffer pointer passed to write()), 
+the kernel must first translate the pointer to a physical address. The goal of this section and the next is to allow the kernel to directly dereference 
+user pointers.
+
+Your first job is to modify the kernel so that every process uses its own copy of the kernel page table when executing in the kernel. Modify struct 
+proc to maintain a kernel page table for each process, and modify the scheduler to switch kernel page tables when switching processes. For this step, 
+each per-process kernel page table should be identical to the existing global kernel page table. You pass this part of the lab if usertests runs correctly.
+Read the book chapter and code mentioned at the start of this assignment; it will be easier to modify the virtual memory code correctly with an 
+understanding of how it works. Bugs in page table setup can cause traps due to missing mappings, can cause loads and stores to affect unexpected pages of
+physical memory, and can cause execution of instructions from incorrect pages of memory.
+
+Some hints:
+
+* Add a field to struct proc for the process's kernel page table.
+* A reasonable way to produce a kernel page table for a new process is to implement a modified version of kvminit that makes a new page table instead of 
+modifying kernel_pagetable. You'll want to call this function from allocproc.
+* Make sure that each process's kernel page table has a mapping for that process's kernel stack. In unmodified xv6, all the kernel stacks are set up in 
+procinit. You will need to move some or all of this functionality to allocproc.
+* Modify scheduler() to load the process's kernel page table into the core's satp register (see kvminithart for inspiration). Don't forget to call 
+sfence_vma() after calling w_satp().
+scheduler() should use kernel_pagetable when no process is running.
+* Free a process's kernel page table in freeproc.
+* You'll need a way to free a page table without also freeing the leaf physical memory pages.
+* vmprint may come in handy to debug page tables.
+* It's OK to modify xv6 functions or add new functions; you'll probably need to do this in at least kernel/vm.c and kernel/proc.c. (But, don't modify 
+kernel/vmcopyin.c, kernel/stats.c, user/usertests.c, and user/stats.c.)
+* A missing page table mapping will likely cause the kernel to encounter a page fault. It will print an error that includes sepc=0x00000000XXXXXXXX. 
+You can find out where the fault occurred by searching for XXXXXXXX in kernel/kernel.asm.
+
+Question 3: Simplify copyin/copyinstr (hard)
+* The kernel's copyin function reads memory pointed to by user pointers. It does this by translating them to physical addresses, which the kernel can 
+directly dereference. It performs this translation by walking the process page-table in software. Your job in this part of the lab is to add user 
+mappings to each process's kernel page table (created in the previous section) that allow copyin (and the related string function copyinstr) to 
+directly dereference user pointers.
+* Replace the body of copyin in kernel/vm.c with a call to copyin_new (defined in kernel/vmcopyin.c); do the same for copyinstr and copyinstr_new. Add
+ mappings for user addresses to each process's kernel page table so that copyin_new and copyinstr_new work. You pass this assignment if usertests runs
+  correctly and all the make grade tests pass.
+* This scheme relies on the user virtual address range not overlapping the range of virtual addresses that the kernel uses for its own instructions and
+ data. Xv6 uses virtual addresses that start at zero for user address spaces, and luckily the kernel's memory starts at higher addresses. However, this
+  scheme does limit the maximum size of a user process to be less than the kernel's lowest virtual address. After the kernel has booted, that address 
+  is 0xC000000 in xv6, the address of the PLIC registers; see kvminit() in kernel/vm.c, kernel/memlayout.h, and Figure 3-4 in the text. You'll need to 
+  modify xv6 to prevent user processes from growing larger than the PLIC address.
+
+Some hints:
+
+* Replace copyin() with a call to copyin_new first, and make it work, before moving on to copyinstr.
+* At each point where the kernel changes a process's user mappings, change the process's kernel page table in the same way. Such points include fork(),
+ exec(), and sbrk().
+* Don't forget that to include the first process's user page table in its kernel page table in userinit.
+* What permissions do the PTEs for user addresses need in a process's kernel page table? (A page with PTE_U set cannot be accessed in kernel mode.)
+* Don't forget about the above-mentioned PLIC limit.
+* Linux uses a technique similar to what you have implemented. Until a few years ago many kernels used the same per-process page table in both user and 
+kernel space, with mappings for both user and kernel addresses, to avoid having to switch page tables when switching between user and kernel space. 
+However, that setup allowed side-channel attacks such as Meltdown and Spectre.
+*/

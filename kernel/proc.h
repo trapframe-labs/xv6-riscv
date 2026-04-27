@@ -104,7 +104,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-
   // trace functionality
   uint32 trace;                // Remembering user passed trace argument
+  // dedicated kernel page table copy
+  pagetable_t kpagetable_per_proc; // Kernel page table
 };
