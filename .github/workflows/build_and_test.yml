@@ -2,7 +2,7 @@ name: Build and Test xv6
 
 on:
   pull_request:
-    branches: [master]
+    branches: [master, extended_labs]
     types: [opened, reopened, synchronize]
 
 jobs:
