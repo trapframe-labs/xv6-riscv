@@ -16,6 +16,8 @@
 #include "file.h"
 #include "fcntl.h"
 
+struct trapframe snapshot_trapframe;
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -501,5 +503,24 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_sigalarm(void)
+{
+  struct proc *p = myproc();
+  argint(0, &p->alarm_interval);
+  argaddr(1, (uint64*)&p->alarm_handler);
+  p->alarm_enabled = ((p->alarm_interval != 0) ? 1 : 0);
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  memmove(p->trapframe,&snapshot_trapframe, sizeof(snapshot_trapframe));
+  p->alarm_enabled = 1;
   return 0;
 }
