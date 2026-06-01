@@ -154,6 +154,8 @@ UPROGS=\
 	$U/_xargs\
 	$U/_trace\
 	$U/_sysinfotest\
+	$U/_call\
+	$U/_bttest\
 	$U/_alarmtest\
 
 UEXTRA = user/xargstest.sh
