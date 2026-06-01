@@ -164,6 +164,12 @@ found:
   // dedicated kernel pagetable setup for each process
   p->kpagetable_per_proc = kvminit_per_process(p);
 
+  // Alarm init
+  p->curr_ticks = 0;
+  p->alarm_interval = 0;
+  p->alarm_enabled = 0;
+  p->alarm_handler = 0;
+  
   return p;
 }
 

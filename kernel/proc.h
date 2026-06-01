@@ -106,6 +106,12 @@ struct proc {
   char name[16];               // Process name (debugging)
   // trace functionality
   uint32 trace;                // Remembering user passed trace argument
+
   // dedicated kernel page table copy
   pagetable_t kpagetable_per_proc; // Kernel page table
+
+  int curr_ticks;              // Ticks passed since the last call or ticks to a new call
+  int alarm_enabled;           // Alarm status; disabled by default
+  int alarm_interval;          // Alarm interval
+  void* alarm_handler;         // Handler for alarm
 };
