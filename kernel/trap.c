@@ -9,6 +9,7 @@
 struct spinlock tickslock;
 uint ticks;
 
+extern struct trapframe snapshot_trapframe;
 extern char trampoline[], uservec[];
 
 // in kernelvec.S, calls kerneltrap().
@@ -81,8 +82,19 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if(p->alarm_enabled) {
+      if(p->curr_ticks == p->alarm_interval){
+        p->curr_ticks = 0;
+        memmove(&snapshot_trapframe, p->trapframe, sizeof(snapshot_trapframe));
+        p->trapframe->epc = (uint64)p->alarm_handler;
+        p->alarm_enabled = 0;
+      } else {
+        p->curr_ticks++;
+      }
+    }
     yield();
+  }
 
   prepare_return();
 

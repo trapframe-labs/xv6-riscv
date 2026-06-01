@@ -107,4 +107,8 @@ struct proc {
 
   // trace functionality
   uint32 trace;                // Remembering user passed trace argument
+  int curr_ticks;              // Ticks passed since the last call or ticks to a new call
+  int alarm_enabled;           // Alarm status; disabled by default
+  int alarm_interval;          // Alarm interval
+  void* alarm_handler;         // Handler for alarm
 };
