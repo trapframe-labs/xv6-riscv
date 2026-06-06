@@ -1,0 +1,33 @@
+Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+- Register a2 holds 13 in main's call to printf
+
+Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+- Compiler inlined f. f is at instruction: 26
+- Compiler inlined g. g is at instruction: 14
+
+At what address is the function printf located?
+- printf is located at 0x616
+
+What value is in the register ra just after the jalr to printf in main?
+- 0x38
+
+Run the following code.
+	// unsigned int i = 0x"null"_d_l_r
+	unsigned int i = 0x00646c72;
+	printf("H%x Wo%s", 57616, &i);
+
+What is the output? 
+Use an ASCII table that maps bytes to characters.
+The output depends on the fact that the RISC-V is little-endian. 
+If the RISC-V were instead big-endian what would you set i to in order to yield the same output? 
+Would you need to change 57616 to a different value?
+- A number/constant output will be the same since it's a number. As long as it's passed as 
+an integer argument, it lives in a register and gets printed as a numeric value.
+Endianness only matters when bytes are written to and read back from memory, like 
+with the &i string case.
+- A string output will be different since we deal with it byte by byte.
+
+In the following code, what is going to be printed after 'y='? 
+(note: the answer is not a specific value.) Why does this happen?
+	printf("x=%d y=%d", 3);
+- Garbage. There is no default; RISC-V does not zero out registers between calls.
